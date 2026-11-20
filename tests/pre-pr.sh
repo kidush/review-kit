@@ -20,6 +20,7 @@ check "install: exits 0" test "$rc" = 0
 check "install: skill copied" cmp -s "$SKILL" "$W/h/agents-skills/pre-pr/SKILL.md"
 check "install: claude skill link" test "$(readlink "$W/h/claude-skills/pre-pr")" = "$W/h/agents-skills/pre-pr"
 check "install: gate executable" test -x "$W/h/bin/review-gate"
+check "install: hook executable" test -x "$W/h/bin/require-pre-pr"
 out=$(inst 2>&1)
 if grep -qE '^(installed|updated|linked) ' <<<"$out"; then bad "install: second run changes nothing" "$out"; else ok "install: second run changes nothing"; fi
 rm -rf "$W/h"; mkdir -p "$W/h/claude-skills/pre-pr"; echo mine > "$W/h/claude-skills/pre-pr/SKILL.md"
@@ -62,13 +63,16 @@ out=$(pi_run fail 3)
 if [ "$(grep -c 'exit: 3$' <<<"$out")" = 2 ]; then ok "pi: failing reviewers report their exit code"; else bad "pi: failing reviewers report their exit code" "$out"; fi
 
 # ---------- one reviewer prompt for both runtimes ----------
-claude_prompt=$(sed -n 's/^> \(Review the code change.*\)$/\1/p' "$SKILL" | tr -d '`' | sed 's/<base>/$base/')
+claude_prompt=$(sed -n 's/^> \(Review the code change.*\)$/\1/p' "$SKILL" | tr -d '`' \
+  | sed 's/<base>/$base/; s/<goal>/$goal/; s/<counterparts>/$counterparts/')
 pi_prompt=$(sed -n 's/^prompt="\(.*\)"$/\1/p' "$SKILL")
 if [ -n "$claude_prompt" ] && [ "$claude_prompt" = "$pi_prompt" ]; then ok "prompt: Claude Code and Pi prompts match"
 else bad "prompt: Claude Code and Pi prompts match" "claude: $claude_prompt" "pi:     $pi_prompt"; fi
 
 # ---------- plugin packaging ----------
 check "plugin: bin/review-gate runs" bash -c '"$1" --help >/dev/null' _ "$ROOT/bin/review-gate"
+check "plugin: bin/require-pre-pr is the hook" test "$(readlink -f "$ROOT/bin/require-pre-pr")" = "$ROOT/hooks/require-pre-pr.sh"
+check "pi: goal reaches the prompt" grep -q 'The change is meant to: Replace with the goal' "$reports/reviewer-1.txt"
 check "skill: frontmatter name" grep -qx 'name: pre-pr' "$SKILL"
 if command -v claude >/dev/null; then
   out=$(claude plugin validate "$ROOT" --strict 2>&1); rc=$?
