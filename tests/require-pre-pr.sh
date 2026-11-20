@@ -41,4 +41,11 @@ fast "cat > x.rb <<'RB'${nl}${big}${nl}RB" 300
 fast "gh pr create --body \"$(printf 'word pr new x %.0s' $(seq 20000))\"" 1000
 expect 2 "$T/a" "gh pr create --body \"$(printf 'word pr new x %.0s' $(seq 2000))\"" 'body-file'
 expect 2 "$T/a" "gh pr create --body \"\$(cat <<'MD'${nl}Summary${nl}- hook now blocks gh pr new${nl}MD${nl})\"" 'body-file'
+# A long command with no PR command in it passes: only a long PR command is blocked unread.
+code=$(for i in $(seq 600); do printf 'length = compute_high(x); process(new_item)\n'; done)
+expect 0 "$T/b" "cat > out.py <<'PY'${nl}${code}${nl}PY"
+fast "cat > out.py <<'PY'${nl}${code}${nl}PY" 300
+# No usable directory to check fails closed.
+got=$(printf '%s' '{"tool_input":{"command":"gh pr create"},"cwd":"/nonexistent"}' | CLAUDE_PROJECT_DIR=/nonexistent2 bash "$H" 2>/dev/null; echo $?)
+if [ "$got" = 2 ]; then echo "ok 2: no usable directory"; else echo "FAIL want=2 got=$got: no usable directory"; fails=$((fails+1)); fi
 [ "$fails" = 0 ] && echo "ALL OK" || { echo "FAILURES: $fails"; exit 1; }

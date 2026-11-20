@@ -39,7 +39,8 @@ Pick one of the two. Both together give two copies of the agent and the skill.
 ```
 
 The plugin provides `review-kit:staff-reviewer`, `review-kit:pre-pr`, and puts `review-gate` on PATH
-(from `bin/`). It does not install anything for Pi or for plain shell use outside Claude Code.
+and the `require-pre-pr` hook script on PATH (from `bin/`), but does not turn the hook on (see "Require the
+review before a PR"). It does not install anything for Pi or for plain shell use outside Claude Code.
 
 **`install.sh`** (Claude Code, Pi and the shell):
 
@@ -105,7 +106,8 @@ needs `jq`. Enable it per project, so it only gates repos that use the loop:
 }
 ```
 
-For one person only, point a user or local settings file at `~/.local/bin/require-pre-pr` instead.
+For one person only, point a user or local settings file at `~/.local/bin/require-pre-pr` (from
+`install.sh`) instead. With the plugin only, use step 1: the plugin's folder moves with each update.
 
 What it does, so the blocks make sense:
 
@@ -114,8 +116,10 @@ What it does, so the blocks make sense:
   blocked, and so is a second PR command in the same call.
 - It runs only `git rev-parse`, with fsmonitor off: no repository fsmonitor command or filter runs before
   the user approves the call.
-- A command that only mentions the PR command (a commit message, a heredoc PR body) is blocked; the
-  message points to `--body-file`. A command longer than 16 KB is blocked unread.
+- A command that only mentions the PR command is blocked: a commit message, a heredoc PR body, or another
+  gh command's text such as `gh issue create --title "pr new button"`. The message points to `--body-file`.
+  A PR command longer than 16 KB is blocked unread; other long commands pass.
+- With no usable directory to check, it blocks.
 - It catches an agent that forgot the review. It is not a gate against a deliberate bypass: `gh api`, a gh
   alias or writing the marker by hand get past it. `--head <other-branch>` is checked against the local
   `HEAD`.

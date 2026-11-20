@@ -61,7 +61,7 @@ Stop at the first clean round.
 
 ## Reviewers
 
-Each round, start **two new reviewers** with the same prompt below. Each one starts with a clean context: it gets only the prompt, not this conversation, the other reviewer's findings, or earlier rounds' findings. Merge their findings and drop duplicates. Keep the prompt short: on past PRs it caught as many known bugs as long checklists. The goal and the counterparts are the exception: on a benchmark PR they took the reviewers from 1.5-2 to 4 of 4 known bugs (see `docs/benchmarks.md`).
+Each round, start **two new reviewers** with the same prompt below. Each one starts with a clean context: it gets only the prompt, not this conversation, the other reviewer's findings, or earlier rounds' findings. Merge their findings and drop duplicates. Keep the prompt short: on past PRs it caught as many known bugs as long checklists. The goal and the counterparts are the exception: on a benchmark PR, a review that read the counterparts and checked the change against its description found 4 of 4 known bugs in both runs, against 1.5-2 without (see `docs/benchmarks.md`).
 
 > Review the code change in this repo: `git diff <base>...HEAD`. The change is meant to: <goal> Read the changed files and the code they call or are called from. Review this diff for bugs and security issues, and report any behaviour change the goal does not mention. <counterparts> You are a read-only reviewer: do not modify files, fix findings, or launch other reviewers. Report only findings you confirmed by reading the code they depend on. Each finding names the file and line, a severity (`blocker`, `should-fix` or `nit`), and the concrete input or state that breaks, with the result.
 
@@ -77,8 +77,15 @@ For each round, set `base` to the chosen ref and run both processes in one bash 
 
 ```bash
 base=origin/main # Replace with the chosen base, quoted as shell data.
-goal="Replace with the goal from Before the loop." # Quoted as shell data.
-counterparts="" # Or: "This change talks to <service> at <path>: read the other side of each contract it touches."
+# The quoted heredocs keep the goal and the counterparts as plain text: backticks and $ in them never run.
+goal=$(cat <<'GOAL'
+Replace with the goal from Before the loop.
+GOAL
+)
+# One line per counterpart, or nothing: This change talks to <service> at <path>: read the other side of each contract it touches.
+counterparts=$(cat <<'COUNTERPARTS'
+COUNTERPARTS
+)
 reports=$(mktemp -d "${TMPDIR:-/tmp}/pre-pr.XXXXXX")
 prompt="Review the code change in this repo: git diff $base...HEAD. The change is meant to: $goal Read the changed files and the code they call or are called from. Review this diff for bugs and security issues, and report any behaviour change the goal does not mention. $counterparts You are a read-only reviewer: do not modify files, fix findings, or launch other reviewers. Report only findings you confirmed by reading the code they depend on. Each finding names the file and line, a severity (blocker, should-fix or nit), and the concrete input or state that breaks, with the result."
 for n in 1 2; do

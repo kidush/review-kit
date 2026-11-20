@@ -43,7 +43,11 @@ echo "stub stderr" >&2
 exit "${FAKE_PI_EXIT:-0}"
 EOF
 chmod +x "$W/stub/pi"
-awk '/^```bash$/{f=1;next} /^```$/{f=0} f' "$SKILL" | sed 's|^base=origin/main.*|base="origin/release 1"|' > "$W/snippet.sh"
+# The goal holds backticks and $, as PR descriptions do: they must reach the prompt as text, never run.
+awk '/^```bash$/{f=1;next} /^```$/{f=0} f' "$SKILL" | sed -e 's|^base=origin/main.*|base="origin/release 1"|' \
+  -e 's|^Replace with the goal from Before the loop\.$|Block `touch ran-it` until $HOME works.|' \
+  -e "/^counterparts=\$(cat <<'COUNTERPARTS'\$/a This change talks to api at /srv/api: read the other side of each contract it touches." \
+  > "$W/snippet.sh"
 check "pi: snippet extracted" grep -q 'pi --print' "$W/snippet.sh"
 check "pi: snippet parses" bash -n "$W/snippet.sh"
 pi_run() { mkdir -p "$W/log$1"; (cd "$W" && PATH="$W/stub:$PATH" TMPDIR="$W" FAKE_PI_LOG="$W/log$1" FAKE_PI_EXIT="$2" bash "$W/snippet.sh" 2>&1); }
@@ -54,6 +58,9 @@ check "pi: both exit 0" test "$(grep -c 'exit: 0$' <<<"$out")" = 2
 check "pi: two processes started" test "$(ls "$W/logok" | wc -l | tr -d ' ')" = 2
 check "pi: both reports written" test -s "$reports/reviewer-1.txt" -a -s "$reports/reviewer-2.txt"
 check "pi: stderr kept apart" grep -q 'stub stderr' "$reports/reviewer-1.err"
+check "pi: goal reaches the prompt as text" grep -qF 'The change is meant to: Block `touch ran-it` until $HOME works.' "$reports/reviewer-1.txt"
+check "pi: nothing in the goal ran" test ! -e "$W/ran-it"
+check "pi: counterparts reach the prompt" grep -qF 'This change talks to api at /srv/api:' "$reports/reviewer-1.txt"
 check "pi: base with a space reaches the prompt" grep -q 'git diff origin/release 1\.\.\.HEAD' "$reports/reviewer-1.txt"
 for f in --print --no-session --no-extensions --no-mcp --no-skills --no-prompt-templates; do
   check "pi: passes $f" grep -qx -- "$f" "$(ls "$W"/logok/* | head -1)"
@@ -72,7 +79,6 @@ else bad "prompt: Claude Code and Pi prompts match" "claude: $claude_prompt" "pi
 # ---------- plugin packaging ----------
 check "plugin: bin/review-gate runs" bash -c '"$1" --help >/dev/null' _ "$ROOT/bin/review-gate"
 check "plugin: bin/require-pre-pr is the hook" test "$(readlink -f "$ROOT/bin/require-pre-pr")" = "$ROOT/hooks/require-pre-pr.sh"
-check "pi: goal reaches the prompt" grep -q 'The change is meant to: Replace with the goal' "$reports/reviewer-1.txt"
 check "skill: frontmatter name" grep -qx 'name: pre-pr' "$SKILL"
 if command -v claude >/dev/null; then
   out=$(claude plugin validate "$ROOT" --strict 2>&1); rc=$?

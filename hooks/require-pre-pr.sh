@@ -21,23 +21,27 @@ fi
 # jq joins line continuations and makes each line its own segment: bash substitutions are quadratic on long input.
 cmd=$(jq -r '.tool_input.command // empty | gsub("\\\\\n"; " ") | gsub("\n"; ";")' <<<"$input")
 body_file="Put a PR body in a file and pass it with --body-file."
-# Splitting a long command around the match is quadratic in bash too, so a long one is blocked unread.
-if (( ${#cmd} > 16384 )); then
-  echo "The command is too long to check for a PR command. $body_file" >&2
-  exit 2
-fi
 # Flags such as `-R owner/repo`, `-Rowner/repo` or `--repo=owner/repo` may also sit between `pr` and `create`.
 # A flag is one word that starts with `-`, and its value cannot, so a long run of flags matches in linear time.
 pattern="(^|[^[:alnum:]_.-])['\"]?(gh|gh-axi)['\"]?[[:space:]]([^;&|]*[[:space:]])?['\"]?pr['\"]?[[:space:]]+(-[^[:space:];&|]*([[:space:]]+[^[:space:];&|-][^[:space:];&|]*)?[[:space:]]+)*['\"]?(create|new)(\$|[^[:alnum:]_-])"
 [[ "$cmd" =~ $pattern ]] || exit 0
+# The match is linear, but splitting a long command around it is quadratic in bash, so a long PR command is
+# blocked unread.
+if (( ${#cmd} > 16384 )); then
+  echo "The command is too long to check for a PR command. $body_file" >&2
+  exit 2
+fi
 # Keep the boundary character the pattern matched before gh, so the prefix ends where the gh word starts.
 prefix=${cmd%%"${BASH_REMATCH[0]}"*}${BASH_REMATCH[1]}
 rest=${cmd#*"${BASH_REMATCH[0]}"}
 
-reword="If the command only mentions opening a PR (e.g. in a commit message), reword it. $body_file"
+reword="If the command only mentions opening a PR (e.g. in a commit message, a PR body or another gh command's text), reword it. $body_file"
 own_command="Run gh pr create as its own command, optionally right after \`cd <absolute path> &&\`, so the hook can tell which checkout the PR comes from. $reword"
 
-cd "$(jq -r '.cwd // empty' <<<"$input")" 2>/dev/null || cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
+if ! { cd "$(jq -r '.cwd // empty' <<<"$input")" 2>/dev/null || cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null; }; then
+  echo "Found no directory to check for a /pre-pr pass. Open the PR from the checkout. $reword" >&2
+  exit 2
+fi
 # The one prefix allowed before the PR command: `cd` to a literal absolute path, which no shell expansion can change.
 cd_prefix='^[[:space:]]*cd[[:space:]]+("(/[^"$`\\]*)"|'\''(/[^'\'']*)'\''|(/[^][:space:];&|<>(){}$`'\''"\\]*))[[:space:]]*&&[[:space:]]*['\''"]?$'
 empty_prefix='^[[:space:]]*['\''"]?$'
