@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# review-gate: deterministic pre-review gate, shared across projects.
+# Exit 0 = pass, 1 = at least one check failed, 2 = usage/setup error.
+# Usage: review-gate [--base <ref>] [--full] [--skip-tests] [--config <file>]
+#   --base <ref>    diff base (default: $BASE from config, else origin/HEAD/main/master)
+#   --full          run the whole test suite instead of only the affected tests
+#   --skip-tests    run only the static checks
+#   --config <file> config file (default: <repo root>/.review-gate.sh)
+# Per-project behaviour lives in .review-gate.sh at the repo root (see README.md).
+# pass/fail/skip always return 0, so "A && pass || fail" is safe.
+# shellcheck disable=SC2015
+set -uo pipefail
+
+CLI_BASE=""; FULL=0; SKIP_TESTS=0; CONFIG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base) [ $# -ge 2 ] || { echo "--base needs a ref" >&2; exit 2; }; CLI_BASE="$2"; shift 2 ;;
+    --full) FULL=1; shift ;;
+    --skip-tests) SKIP_TESTS=1; shift ;;
+    --config) [ $# -ge 2 ] || { echo "--config needs a file" >&2; exit 2; }; CONFIG="$2"; shift 2 ;;
+    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "not inside a git repository" >&2; exit 2; }
+cd "$ROOT" || exit 2
+
+# ---------- defaults (override any of these in .review-gate.sh) ----------
+BASE=""
+# Pathspecs whose added lines are scanned by the debug/secret/project checks. Empty = whole repo.
+ADDED_PATHS=()
+# ERE matched against added diff lines ("+..."). Covers ruby, python, js/ts, go, java/kotlin.
+DEBUG_PATTERNS='binding\.pry|byebug|\bdebugger\b|^\+\s*(puts|pp|p) |^\+\s*(import pdb|import ipdb)|pdb\.set_trace\(|breakpoint\(\)|^\+\s*print\(|console\.(log|debug)\(|\bfmt\.Print(ln|f)?\(|^\+\s*spew\.Dump|System\.(out|err)\.print|\.printStackTrace\(\)|Log\.d\('
+SECRET_PATTERN='(api[_-]?key|secret|token|password)\s*[:=]\s*["'\''][A-Za-z0-9_\-]{12,}'
+# Source files that need a changed test (ERE on repo-relative path). Empty = check skipped.
+SRC_PATTERN=""
+SRC_EXCLUDE_PATTERN=""  # ERE; matching files are not required to have tests (e.g. the tests themselves)
+# Env var that disables the test-per-file check when set to 1.
+SKIP_TEST_CHECK_VAR="REVIEW_GATE_SKIP_TEST_CHECK"
+TEST_CHECK_NAME="test-per-file check"
+TEST_CHECK_LABEL="changed source files have changed tests"
+TEST_CHECK_FAIL_LABEL="source files changed with no matching changed test (add one, incl. the error path)"
+# Test files (ERE) used as targets for TEST_CMD_TARGETED.
+TEST_FILE_PATTERN=""
+TEST_CMD=""            # full suite, e.g. "go test ./..."
+TEST_CMD_TARGETED=""   # gets the changed test files appended; empty = always TEST_CMD
+TEST_DEFAULT_TARGET="" # target used when no test file changed ("" = run TEST_CMD)
+TEST_NAME="tests"
+TEST_SUMMARY_REGEX=""  # ERE; last matching log line is shown in the PASS/FAIL line
+DEPRECATION_REGEX=""   # ERE; count of matching log lines is printed as INFO
+TEST_CONTAINER=""      # if set, tests run via docker exec in this container
+TEST_CONTAINER_WORKDIR=""  # path the repo is mounted at inside the container
+TEST_CONTAINER_ENV=()  # e.g. (RAILS_ENV=test)
+TEST_CONTAINER_HINT="" # how to start it, shown when not running
+
+# Default test-file mapping: foo.ext matches foo_test.*, foo.test.*, foo_spec.*, test_foo.*, FooTest.*
+test_pattern_for() {
+  local b; b="$(basename "$1")"; b="${b%.*}"
+  printf '(^|/)(test_)?%s([._-]?(test|spec|Test|Tests|Spec))?\\.[A-Za-z]+$' "$b"
+}
+
+# ---------- helpers exposed to project_checks ----------
+FAILS=0
+pass() { printf 'PASS  %s\n' "$1"; }
+fail() { printf 'FAIL  %s\n' "$1"; shift; for l in "$@"; do printf '        %s\n' "$l"; done; FAILS=$((FAILS+1)); }
+skip() { printf 'SKIP  %s\n' "$1"; }
+info() { printf 'INFO  %s\n' "$1"; }
+# added_lines [pathspec...]: "+" lines added since MERGE_BASE (incl. uncommitted) in the given paths
+added_lines() { git diff -U0 "$MERGE_BASE" -- "$@" | grep -E '^\+[^+]' || true; }
+# changed_matching <ERE>: changed files matching the regex
+changed_matching() { printf '%s\n' "$CHANGED" | grep -E "$1" || true; }
+changed() { printf '%s\n' "$CHANGED" | grep -qE "$1"; }
+
+[ -n "$CONFIG" ] || CONFIG="$ROOT/.review-gate.sh"
+HAVE_CONFIG=0
+if [ -f "$CONFIG" ]; then
+  # shellcheck source=/dev/null
+  . "$CONFIG" || { echo "failed to load $CONFIG" >&2; exit 2; }
+  HAVE_CONFIG=1
+fi
+[ -n "$CLI_BASE" ] && BASE="$CLI_BASE"
+if [ -z "$BASE" ]; then
+  BASE="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -z "$BASE" ]; then
+    for r in origin/main origin/master main master; do
+      git rev-parse -q --verify "$r^{commit}" >/dev/null && { BASE="$r"; break; }
+    done
+  fi
+  [ -n "$BASE" ] || { echo "cannot guess a base; pass --base <ref>" >&2; exit 2; }
+fi
+MERGE_BASE="$(git merge-base "$BASE" HEAD 2>/dev/null)" || { echo "bad base: $BASE" >&2; exit 2; }
+
+CHANGED="$(git diff --name-only --diff-filter=ACMR "$MERGE_BASE" HEAD; git diff --name-only --diff-filter=ACMR HEAD)"
+CHANGED="$(printf '%s\n' "$CHANGED" | sort -u | sed '/^$/d')"
+[ -z "$CHANGED" ] && { echo "No changes against $BASE"; exit 0; }
+ADDED="$(added_lines ${ADDED_PATHS[@]+"${ADDED_PATHS[@]}"})"
+echo "Base: $BASE ($(echo "$CHANGED" | wc -l | tr -d ' ') files changed)"
+[ "$HAVE_CONFIG" = 1 ] || echo "Config: none ($CONFIG not found; generic defaults)"
+echo
+
+# 1. Whitespace errors and conflict markers
+out="$(git diff --check "$MERGE_BASE" 2>&1)" && pass "no whitespace errors or conflict markers" || fail "git diff --check" "$out"
+
+# 2. Debug leftovers in added lines
+if [ -n "$DEBUG_PATTERNS" ]; then
+  out="$(echo "$ADDED" | grep -nE "$DEBUG_PATTERNS" || true)"
+  [ -z "$out" ] && pass "no debug leftovers" || fail "debug leftovers in added code" "$out"
+fi
+
+# 3. Hardcoded secrets
+out="$(echo "$ADDED" | grep -niE "$SECRET_PATTERN" || true)"
+[ -z "$out" ] && pass "no hardcoded credentials" || fail "possible hardcoded credentials" "$out"
+
+# 4. Every changed source file has a changed test
+if [ -z "$SRC_PATTERN" ]; then skip "$TEST_CHECK_NAME (SRC_PATTERN not configured)"
+elif [ "${!SKIP_TEST_CHECK_VAR:-0}" = 1 ]; then skip "$TEST_CHECK_NAME ($SKIP_TEST_CHECK_VAR=1, e.g. framework upgrades)"
+else
+  missing=()
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ -n "$SRC_EXCLUDE_PATTERN" ] && printf '%s\n' "$f" | grep -qE "$SRC_EXCLUDE_PATTERN" && continue
+    changed "$(test_pattern_for "$f")" || missing+=("$f")
+  done < <(changed_matching "$SRC_PATTERN")
+  [ ${#missing[@]} -eq 0 ] && pass "$TEST_CHECK_LABEL" || fail "$TEST_CHECK_FAIL_LABEL" "${missing[@]}"
+fi
+
+# 5. Project-specific rules
+if declare -F project_checks >/dev/null; then project_checks; fi
+
+# 6. Tests
+if [ "$SKIP_TESTS" = 1 ]; then skip "tests (--skip-tests)"
+elif declare -F run_tests >/dev/null; then run_tests
+elif [ -z "$TEST_CMD" ]; then skip "tests (TEST_CMD not configured)"
+else
+  cmd="$TEST_CMD"; label="$TEST_NAME full suite"
+  if [ "$FULL" = 0 ] && [ -n "$TEST_CMD_TARGETED" ]; then
+    target=""; [ -n "$TEST_FILE_PATTERN" ] && target="$(changed_matching "$TEST_FILE_PATTERN" | tr '\n' ' ')"
+    [ -z "$target" ] && target="$TEST_DEFAULT_TARGET"
+    if [ -n "$target" ]; then cmd="$TEST_CMD_TARGETED $target"; label="$TEST_NAME $target"; fi
+  fi
+  ok=1
+  if [ -n "$TEST_CONTAINER" ]; then
+    mount="$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$TEST_CONTAINER_WORKDIR\"}}{{.Source}}{{end}}{{end}}" "$TEST_CONTAINER" 2>/dev/null)"
+    if [ -z "$mount" ]; then ok=0; fail "container $TEST_CONTAINER not running${TEST_CONTAINER_HINT:+ ($TEST_CONTAINER_HINT)}"
+    elif [ "$(realpath "$mount")" != "$(realpath "$ROOT")" ]; then
+      ok=0; fail "container mounts $mount, not $ROOT; run the gate from that checkout or use --skip-tests"
+    fi
+  fi
+  if [ "$ok" = 1 ]; then
+    log="$(mktemp)"
+    if [ -n "$TEST_CONTAINER" ]; then
+      envargs=(); for e in ${TEST_CONTAINER_ENV[@]+"${TEST_CONTAINER_ENV[@]}"}; do envargs+=(-e "$e"); done
+      docker exec ${envargs[@]+"${envargs[@]}"} "$TEST_CONTAINER" bash -lc "cd $TEST_CONTAINER_WORKDIR && $cmd" >"$log" 2>&1
+    else
+      bash -c "$cmd" >"$log" 2>&1
+    fi
+    rc=$?
+    summary=""; [ -n "$TEST_SUMMARY_REGEX" ] && summary="$(grep -E "$TEST_SUMMARY_REGEX" "$log" | tail -1)"
+    if [ $rc -eq 0 ]; then pass "$label${summary:+: $summary}"
+    else fail "$label: ${summary:-exit $rc}" "full log: $log"; tail -25 "$log"; fi
+    [ -n "$DEPRECATION_REGEX" ] && info "deprecation warnings in run: $(grep -ciE "$DEPRECATION_REGEX" "$log")"
+  fi
+fi
+
+echo; [ $FAILS -eq 0 ] && { echo "GATE: PASS"; exit 0; } || { echo "GATE: FAIL ($FAILS check(s))"; exit 1; }

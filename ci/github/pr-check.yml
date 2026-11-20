@@ -1,0 +1,62 @@
+# Reusable workflow. Copy to .github/workflows/pr-check.yml in the review-kit repo
+# (e.g. kidush/review-kit), then call it from each project.
+name: review-gate
+
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: "Base ref for the diff (default: origin/<PR base branch>)"
+        type: string
+        default: ""
+      setup:
+        description: Shell commands run before the gate (install toolchain/deps)
+        type: string
+        default: ""
+      skip-tests:
+        description: Run only static checks (use when tests run in another job)
+        type: boolean
+        default: true
+      kit-repo:
+        description: Repository holding review-gate
+        type: string
+        default: kidush/review-kit
+      kit-ref:
+        description: Git ref of the kit to use (pin a tag or SHA)
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  review-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout project (full history for merge-base)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout review kit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.kit-repo }}
+          ref: ${{ inputs.kit-ref }}
+          path: .review-kit
+
+      - name: Project setup
+        if: ${{ inputs.setup != '' }}
+        run: ${{ inputs.setup }}
+
+      - name: Run review-gate
+        env:
+          INPUT_BASE: ${{ inputs.base }}
+          PR_BASE: ${{ github.base_ref }}
+          SKIP_TESTS: ${{ inputs.skip-tests }}
+        run: |
+          base="${INPUT_BASE:-origin/${PR_BASE:-main}}"
+          args=(--base "$base")
+          [ "$SKIP_TESTS" = "true" ] && args+=(--skip-tests)
+          rm -rf .review-kit/.git
+          bash .review-kit/review-gate "${args[@]}"

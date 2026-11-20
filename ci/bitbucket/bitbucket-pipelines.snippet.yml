@@ -1,0 +1,26 @@
+# Add a "Review gate" step to an existing pull-requests pipeline in bitbucket-pipelines.yml.
+# It runs in parallel with your existing build/test step, with --skip-tests (your test step runs the suite).
+#
+# Adjust BASE to your default branch (master/main). Bitbucket clones with depth 50 by default; if the
+# merge-base is older than that the gate exits 2 with "bad base", so the step uses a full clone.
+
+definitions:
+  steps:
+    - step: &review-gate
+        name: Review gate
+        clone:
+          depth: full
+        script:
+          - export BASE=master
+          - git fetch origin "$BASE:refs/remotes/origin/$BASE"
+          - curl -fsSL https://raw.githubusercontent.com/kidush/review-kit/main/review-gate -o /tmp/review-gate
+          - bash /tmp/review-gate --base "origin/$BASE" --skip-tests
+    # - step: &build-and-test   # your existing step
+    #     ...
+
+pipelines:
+  pull-requests:
+    '**':
+      - parallel:
+          - step: *review-gate
+          - step: *build-and-test

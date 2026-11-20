@@ -1,0 +1,15 @@
+# .github/workflows/pr.yml in a project repo
+name: PR
+
+on:
+  pull_request:
+
+jobs:
+  review-gate:
+    uses: kidush/review-kit/.github/workflows/pr-check.yml@main  # pin a tag in practice
+    with:
+      skip-tests: true          # tests already run in the project's own test job
+      # setup: |                # only needed when skip-tests is false
+      #   pip install -r requirements.txt
+      # base: origin/develop    # default: origin/<PR base branch>
+      # kit-ref: v1

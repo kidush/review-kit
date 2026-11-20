@@ -1,0 +1,5 @@
+#!/bin/bash
+case "$1" in
+ inspect) [ "${FAKE_MOUNT:-}" ] && echo "$FAKE_MOUNT"; exit 0;;
+ exec) echo "ARGS: $*" >&2; echo "3 examples, ${FAKE_FAILS:-0} failures"; echo "DEPRECATION WARNING: x"; [ "${FAKE_FAILS:-0}" = 0 ];;
+esac

@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: review-clean-control
+tags: [reviewer,control]
+context:
+  scaffold_script: scaffold.sh
