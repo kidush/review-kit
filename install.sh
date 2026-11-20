@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs review-gate to ~/.local/bin, the staff-reviewer agent to ~/.claude/agents, and the
+# Installs review-gate and the require-pre-pr hook to ~/.local/bin, the staff-reviewer agent to ~/.claude/agents, and the
 # pre-pr skill to ~/.agents/skills (read by Pi) with a ~/.claude/skills symlink (read by Claude Code).
 # Idempotent: re-running updates changed files and reports unchanged ones.
 # Use this or the review-kit plugin, not both: both together give two copies of the agent and skill.
@@ -22,6 +22,7 @@ put() { # src dst mode
 }
 
 put "$KIT/review-gate" "$BIN_DIR/review-gate" 755
+put "$KIT/hooks/require-pre-pr.sh" "$BIN_DIR/require-pre-pr" 755
 put "$KIT/agents/staff-reviewer.md" "$AGENT_DIR/staff-reviewer.md" 644
 
 # link dst target: create the symlink, or leave anything else at dst alone.
@@ -41,3 +42,4 @@ link "$CLAUDE_SKILL_DIR/pre-pr" "$SKILL_DIR/pre-pr"
 
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "note: $BIN_DIR is not on PATH; add: export PATH=\"$BIN_DIR:\$PATH\"" ;; esac
 echo "Per project: copy a .review-gate.sh (see examples/) and a REVIEW.md to the repo root."
+echo "To block gh pr create until /pre-pr passed, see \"Require the review before a PR\" in the README."

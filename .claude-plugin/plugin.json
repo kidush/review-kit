@@ -1,7 +1,7 @@
 {
   "name": "review-kit",
-  "version": "0.2.0",
-  "description": "Shared pre-PR review kit: the review-gate script, a staff-reviewer agent, and a pre-pr review loop skill.",
+  "version": "0.3.0",
+  "description": "Shared pre-PR review kit: the review-gate script, a staff-reviewer agent, a pre-pr review loop skill, and a require-pre-pr hook.",
   "author": { "name": "kidush" },
   "repository": "https://github.com/kidush/review-kit",
   "keywords": ["code-review", "pre-pr", "review-gate"]
