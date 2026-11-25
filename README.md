@@ -9,7 +9,10 @@ A shared pre-PR review kit:
 - **`skills/pre-pr`** - the pre-PR review loop: simplify once, then per round the gate, two independent
   clean-context reviewers (plus `staff-reviewer` when installed), verified fixes, at most 3 rounds. Works in
   Claude Code and in Pi (two `pi --print` reviewer processes instead of subagents).
-- **Per-project config**: `.review-gate.sh` (checks) and `REVIEW.md` (review knowledge) in each repo.
+- **`hooks/require-pre-pr.sh`** - an optional Claude Code hook that blocks `gh pr create` until `pre-pr`
+  recorded a pass for the current commit.
+- **Per-project config**: `.review-gate.sh` (checks) and `REVIEW.md` (review knowledge, including the
+  counterpart services and their local checkout paths) in each repo.
 - **CI wrappers** for GitHub Actions and Bitbucket Pipelines.
 
 ## How it maps to the article's review layers
@@ -36,7 +39,8 @@ Pick one of the two. Both together give two copies of the agent and the skill.
 ```
 
 The plugin provides `review-kit:staff-reviewer`, `review-kit:pre-pr`, and puts `review-gate` on PATH
-(from `bin/`). It does not install anything for Pi or for plain shell use outside Claude Code.
+and the `require-pre-pr` hook script on PATH (from `bin/`), but does not turn the hook on (see "Require the
+review before a PR"). It does not install anything for Pi or for plain shell use outside Claude Code.
 
 **`install.sh`** (Claude Code, Pi and the shell):
 
@@ -47,6 +51,7 @@ The plugin provides `review-kit:staff-reviewer`, `review-kit:pre-pr`, and puts `
 | What | Where | Override |
 |---|---|---|
 | `review-gate` | `~/.local/bin` | `BIN_DIR` |
+| `require-pre-pr` hook | `~/.local/bin` | `BIN_DIR` |
 | `staff-reviewer` agent | `~/.claude/agents` | `AGENT_DIR` |
 | `pre-pr` skill (Pi reads it here) | `~/.agents/skills/pre-pr` | `SKILL_DIR` |
 | link for Claude Code | `~/.claude/skills/pre-pr` -> the folder above | `CLAUDE_SKILL_DIR` |
@@ -82,6 +87,45 @@ project_checks() {                       # project rules; helpers: pass fail ski
 3. Run `review-gate` (flags: `--base <ref>`, `--full`, `--skip-tests`, `--config <file>`), or ask Claude Code
    to "use the staff-reviewer agent".
 
+## Require the review before a PR
+
+`pre-pr` writes `<git dir>/pre-pr-passed` with the commit it passed. `hooks/require-pre-pr.sh` is a
+PreToolUse hook that blocks `gh pr create` and `gh pr new` until that file holds the current `HEAD`. It
+needs `jq`. Enable it per project, so it only gates repos that use the loop:
+
+1. Copy `hooks/require-pre-pr.sh` to `.claude/hooks/` in the repo, so teammates get it without the kit.
+2. Add it to the repo's `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/require-pre-pr.sh" }] }
+    ]
+  }
+}
+```
+
+For one person only, point a user or local settings file at `~/.local/bin/require-pre-pr` (from
+`install.sh`) instead. With the plugin only, use step 1: the plugin's folder moves with each update.
+
+What it does, so the blocks make sense:
+
+- The PR command runs as its own command, or right after one `cd <absolute path> &&`, so the hook checks
+  the checkout the PR comes from. Anything else before it (`git push &&`, a relative `cd`, a subshell) is
+  blocked, and so is a second PR command in the same call.
+- It runs only `git rev-parse`, with fsmonitor off: no repository fsmonitor command or filter runs before
+  the user approves the call.
+- A command that only mentions the PR command is blocked: a commit message, a heredoc PR body, or another
+  gh command's text such as `gh issue create --title "pr new button"`. The message points to `--body-file`.
+  A PR command longer than 16 KB is blocked unread; other long commands pass.
+- With no usable directory to check, it blocks.
+- It catches an agent that forgot the review. It is not a gate against a deliberate bypass: `gh api`, a gh
+  alias or writing the marker by hand get past it. `--head <other-branch>` is checked against the local
+  `HEAD`.
+
+`tests/require-pre-pr.sh` covers these cases offline.
+
 ## Adopting in an existing project
 
 1. `./install.sh`.
@@ -110,6 +154,7 @@ Inputs: `base`, `setup`, `skip-tests` (default true), `kit-repo`, `kit-ref`.
 ```bash
 tests/equiv.sh           # review-gate scenarios on a synthetic Rails-like repo
 tests/container-mode.sh  # review-gate docker exec mode, with a fake docker
+tests/require-pre-pr.sh  # the hook: which commands it blocks, no repository code run, speed
 tests/pre-pr.sh          # install.sh, the Pi snippet against a stub pi, prompt drift, plugin validate,
                          # and the eval fixtures (each builds, passes its tests and the gate, bug is real)
 ```
@@ -149,7 +194,8 @@ in the results folder has score, cost, duration and turns for every run.
   today the security pass only runs inside the local agent.
 - **Risk tiers / CODEOWNERS**: require a human approver for sensitive paths (payments, auth, migrations,
   CI config) via CODEOWNERS (GitHub) or default reviewers / merge checks (Bitbucket).
-- A benchmark runner with real git (headless `claude -p` in throwaway worktrees), so the gate and
-  `git diff` run inside the benchmark too.
+- A benchmark runner with real git, so the gate and `git diff` run inside the benchmark too.
+  [agy-bench](https://github.com/kidush/agy-bench) runs reviews of real PRs in throwaway worktrees and
+  scores them against an answer key (`--answer-key`, `--runs`); see `docs/benchmarks.md`.
 - Benchmark cases for the full `pre-pr` loop (fix rounds, marker). Today the evals cover the reviewers and
   the skill trigger only, because a full loop costs several reviewer runs per case.

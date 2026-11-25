@@ -35,7 +35,9 @@ The gate does not fix anything itself. Project rules live in `.review-gate.sh`; 
 ## Before the loop
 
 1. **Scope.** Run `git fetch origin`, then `git diff <base>...HEAD --name-only`. Commit any uncommitted changes first, because the reviewers review commits only. If nothing changed, stop and say so.
-2. **Simplify (Claude Code only).** Invoke the `simplify` skill on the changes since `<base>`, and commit its changes on their own (`Simplify <area>`). Run it once only: a later run would change code the reviewers already checked. In Pi, skip this step and say so in the report, because Pi has no `simplify` skill.
+2. **Goal.** Write down what the change is meant to do, in a few lines: the ticket, or the PR description you plan to use. It replaces `<goal>` in the reviewer prompt, so the reviewers check the diff against it and report behaviour changes it does not mention, such as an undisclosed revert.
+3. **Counterparts.** List the services on the other side of a contract this diff touches (an API it calls, a client that calls it, a queue consumer), with the path of their local checkout. `REVIEW.md` may list them. `<counterparts>` in the reviewer prompt becomes one sentence per service: "This change talks to <service> at <path>: read the other side of each contract it touches." Ask the user for a path you cannot find. With no counterpart, `<counterparts>` is empty.
+4. **Simplify (Claude Code only).** Invoke the `simplify` skill on the changes since `<base>`, and commit its changes on their own (`Simplify <area>`). Run it once only: a later run would change code the reviewers already checked. In Pi, skip this step and say so in the report, because Pi has no `simplify` skill.
 
 ## Loop
 
@@ -59,9 +61,9 @@ Stop at the first clean round.
 
 ## Reviewers
 
-Each round, start **two new reviewers** with the same prompt below. Each one starts with a clean context: it gets only the prompt, not this conversation, the other reviewer's findings, or earlier rounds' findings. Merge their findings and drop duplicates. Keep the prompt short: on past PRs it caught as many known bugs as long checklists.
+Each round, start **two new reviewers** with the same prompt below. Each one starts with a clean context: it gets only the prompt, not this conversation, the other reviewer's findings, or earlier rounds' findings. Merge their findings and drop duplicates. Keep the prompt short: on past PRs it caught as many known bugs as long checklists. The goal and the counterparts are the exception: on a benchmark PR, a review that read the counterparts and checked the change against its description found 4 of 4 known bugs in both runs, against 1.5-2 without (see `docs/benchmarks.md`).
 
-> Review the code change in this repo: `git diff <base>...HEAD`. Read the changed files and the code they call or are called from. Review this diff for bugs and security issues. You are a read-only reviewer: do not modify files, fix findings, or launch other reviewers. Report only findings you confirmed by reading the code they depend on. Each finding names the file and line, a severity (`blocker`, `should-fix` or `nit`), and the concrete input or state that breaks, with the result.
+> Review the code change in this repo: `git diff <base>...HEAD`. The change is meant to: <goal> Read the changed files and the code they call or are called from. Review this diff for bugs and security issues, and report any behaviour change the goal does not mention. <counterparts> You are a read-only reviewer: do not modify files, fix findings, or launch other reviewers. Report only findings you confirmed by reading the code they depend on. Each finding names the file and line, a severity (`blocker`, `should-fix` or `nit`), and the concrete input or state that breaks, with the result.
 
 **Claude Code:** launch the two reviewers as parallel subagents in one message.
 
@@ -75,8 +77,17 @@ For each round, set `base` to the chosen ref and run both processes in one bash 
 
 ```bash
 base=origin/main # Replace with the chosen base, quoted as shell data.
+# The quoted heredocs keep the goal and the counterparts as plain text: backticks and $ in them never run.
+goal=$(cat <<'GOAL'
+Replace with the goal from Before the loop.
+GOAL
+)
+# One line per counterpart, or nothing: This change talks to <service> at <path>: read the other side of each contract it touches.
+counterparts=$(cat <<'COUNTERPARTS'
+COUNTERPARTS
+)
 reports=$(mktemp -d "${TMPDIR:-/tmp}/pre-pr.XXXXXX")
-prompt="Review the code change in this repo: git diff $base...HEAD. Read the changed files and the code they call or are called from. Review this diff for bugs and security issues. You are a read-only reviewer: do not modify files, fix findings, or launch other reviewers. Report only findings you confirmed by reading the code they depend on. Each finding names the file and line, a severity (blocker, should-fix or nit), and the concrete input or state that breaks, with the result."
+prompt="Review the code change in this repo: git diff $base...HEAD. The change is meant to: $goal Read the changed files and the code they call or are called from. Review this diff for bugs and security issues, and report any behaviour change the goal does not mention. $counterparts You are a read-only reviewer: do not modify files, fix findings, or launch other reviewers. Report only findings you confirmed by reading the code they depend on. Each finding names the file and line, a severity (blocker, should-fix or nit), and the concrete input or state that breaks, with the result."
 for n in 1 2; do
   pi --print --no-session --no-extensions --no-mcp --no-skills \
     --no-prompt-templates --tools read,bash \
